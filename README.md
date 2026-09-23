@@ -1,13 +1,139 @@
-# Code as Policies: Language Model Programs for Embodied Control
+# Code as Policies: Piper/MuJoCo Reproduction
 
-Project website: https://code-as-policies.github.io/
+This repository preserves the released Google `code_as_policies` implementation and adds a reproducible Piper/MuJoCo migration of its tabletop tasks, prompts, hierarchical LMP execution, and scoring protocol.
 
-**Abstract** Large language models (LLMs) trained on code-completion have shown to be capable of synthesizing simple Python programs from docstrings. We find that these code-writing LLMs can be re-purposed to write robot policy code, given natural language commands. Specifically, policy code can express functions or feedback loops that process perception outputs (e.g., from object detectors) and parameterize control primitive APIs. When provided as input several example language commands (formatted as comments) followed by corresponding policy code (via few-shot prompting), LLMs can take in new commands and autonomously re-compose API calls to generate new policy code respectively. By chaining classic logic structures and referencing third-party libraries (e.g., NumPy, Shapely) to perform arithmetic, LLMs used in this way can write robot policies that (i) exhibit spatial-geometric reasoning, (ii) generalize to new instructions, and (iii) prescribe precise values (e.g., velocities) to ambiguous descriptions ("faster") depending on context (i.e., behavioral commonsense). This paper presents code as policies: a robot-centric formalization of language model generated programs (LMPs) that can represent reactive policies (e.g., impedance controllers), as well as waypoint-based policies (vision-based pick and place, trajectory-based control), demonstrated across multiple real robot platforms. Central to our approach is prompting hierarchical code-gen (recursively defining undefined functions), which can write more complex code and also improves state-of-the-art to solve 39.8% of problems on the HumanEval benchmark. Code and videos are available at https://code-as-policies.github.io
+## Scope
 
-## Instructions
+- The upstream README is preserved at `original/README.original.md`.
+- All upstream notebooks are preserved unchanged in `original/notebooks/`.
+- The policy-generation path still loads the upstream `Interactive_Demo.ipynb` directly.
+- The simulator backend is the pinned `robot_control/` Git submodule, frozen per run in `manifest.json`.
+- This is a Piper/MuJoCo migration study, not a claim of identical UR5e/PyBullet hardware results.
 
-We provide a list of self-contained colabs:
+## Reproduction flow
 
-* LMP Examples - Follows the examples given in the Method section
-* Experiment* - These colabs reproduce experiment results in the paper
-* Interactive Demo - Interactive simulated tabletop manipulation domain
+```text
+language instruction
+        ↓
+upstream tabletop few-shot prompts
+        ↓
+tabletop_ui LMP generates Python policy
+        ↓
+recursive generation of undefined helper functions
+        ↓
+MuJoCo state queries or RGB-D object observations
+        ↓
+Piper pick/place primitives
+        ↓
+deterministic scoring, failure classification, and artifacts
+```
+
+`piper_lmp.py` executes the upstream `LMP`, `LMPFGen`, `FunctionParser`, prompts, and configuration. The adapter changes only the robot, scene, camera, and execution interfaces.
+
+## Experiments
+
+The paper suite contains 22 task categories: 8 seen/seen, 8 seen/unseen, and 6 unseen/unseen categories. The canonical protocol runs 50 trials per category, for 1100 trials total, with fixed seeds, deterministic scene sampling, downward-tool IK preflight, per-trial XML scenes, and complete JSONL records.
+
+The main track uses structured MuJoCo object state queries to stay closest to the paper simulation protocol. The optional perception track uses the same task cases with a wrist RGB-D camera and an external SAM3-compatible segmenter; its results are reported separately. The perception adapter rejects zero, non-finite, out-of-range, and robust depth outlier pixels before computing object observations. The bundled SAM3 client uses a length-prefixed TCP socket protocol, not HTTP.
+
+The fixed tool orientation is downward for this Piper migration. This is an adapter constraint, not a claim that every original Code as Policies robot policy used only one orientation.
+
+## Layout
+
+```text
+original/                         unchanged upstream README and notebooks
+paper_prompts/                    released simulation prompts
+scenes/                           Piper/MuJoCo scene templates
+robot_control/                    pinned Piper/MuJoCo backend Git submodule
+franka_real.py                    safety-gated FR3 real-robot tabletop adapter
+run_franka_real.py                dry-run and explicit-execution entry point
+piper_lmp.py                      upstream LMP loading and execution adapter
+piper_demo.py                     Piper/MuJoCo control and RGB-D adapter
+scene_factory.py                  deterministic scene generation
+workspace_calibration.py          backend-specific IK workspace probe
+paper_suite.py                    22 paper task categories
+task_scoring.py                   registered Piper scoring protocol
+rgbd_perception.py                RGB-D reprojection and observations
+sam3_client.py                    generic TCP segmentation client
+run_paper_suite.py                planning, execution, recording, and summaries
+repro_metadata.py                 manifests, version capture, and confidence intervals
+results/                          canonical results and local historical archives
+tests/                            offline and MuJoCo tests
+```
+
+## Setup
+
+Clone with submodules and install the pinned backend inside this checkout:
+
+```bash
+git clone --recurse-submodules https://github.com/HY-LiYihan/code_as_policy.git
+cd code_as_policy
+# If this repository was cloned without --recurse-submodules:
+git submodule update --init --recursive
+cd robot_control
+uv venv --python 3.11 .venv
+uv pip install --python .venv/bin/python -e '.[mujoco,dev]' openai astunparse shapely
+cd ..
+export ROBOT_CONTROL_ROOT="$PWD/robot_control"
+export PYTHONPATH="$ROBOT_CONTROL_ROOT/src:$PYTHONPATH"
+```
+
+Canonical runs require a clean backend worktree at the commit pinned by this repository. Do not update the submodule to a floating branch without explicitly recording the new Git link. The manifest stores the backend commit and nested submodules, package versions, prompt hashes, scene protocol, and adapter hashes. The API credential is read only from `OPENAI_API_KEY` at runtime.
+
+## Validation and runs
+
+```bash
+"$ROBOT_CONTROL_ROOT/.venv/bin/mjpython" -m pytest -q tests
+```
+
+Plan scenes without model calls:
+
+```bash
+"$ROBOT_CONTROL_ROOT/.venv/bin/python" run_paper_suite.py \
+  --plan-only --seed 20260923 --trials 50 --require-downward-ik \
+  --output-dir results/canonical/paper-sim-plan
+```
+
+Run the canonical OpenAI policy track:
+
+```bash
+export OPENAI_API_KEY='set outside the repository'
+export OPENAI_BASE_URL='https://api.openai.com/v1'
+"$ROBOT_CONTROL_ROOT/.venv/bin/mjpython" run_paper_suite.py \
+  --seed 20260923 --trials 50 --require-downward-ik \
+  --record-representative-videos \
+  --output-dir results/canonical/openai-paper-sim
+```
+
+The representative-video mode keeps the first successful and first failed/exceptional video per experiment group. All trials remain in `trials.jsonl`; `summary.json` contains category rates, Wilson 95% intervals, and failure-stage counts.
+
+## Real Franka FR3
+
+The real-robot path reuses the original hierarchical LMP but is separate from the Piper/MuJoCo experiment runner. It accepts object observations already expressed in the FR3 base frame, so camera calibration is explicit and auditable. The default is a dry run; physical motion requires both `--execute` and `--confirm-real`.
+
+```bash
+export OPENAI_API_KEY='set outside the repository'
+export OPENAI_BASE_URL='https://api.openai.com/v1'
+PYTHONPATH="$PWD/robot_control/src" \
+  "$ROBOT_CONTROL_ROOT/.venv/bin/python" run_franka_real.py \
+  --objects-json examples/franka_objects.base-frame.json \
+  --command "Pick up the blue block and place it on the yellow bowl"
+```
+
+On the Ubuntu control PC, install the matching `pylibfranka`/`libfranka` pair, set `FRANKA_ROBOT_IP`, and inspect the generated plan before enabling motion. Do not use the execution flags until the robot workspace is clear and the emergency stop is reachable:
+
+```bash
+PYTHONPATH="$PWD/robot_control/src" \
+  "$ROBOT_CONTROL_ROOT/.venv/bin/python" run_franka_real.py \
+  --objects-json examples/franka_objects.base-frame.json \
+  --command "Pick up the blue block and place it on the yellow bowl" \
+  --robot-ip "$FRANKA_ROBOT_IP" --execute --confirm-real
+```
+
+The current backend provides standalone RealSense frames for FR3 but does not provide calibrated FR3 camera extrinsics. Therefore the JSON input must come from a separately calibrated perception process; this repository does not claim automatic FR3 RGB-D-to-base calibration.
+
+## Results and privacy
+
+`results/canonical/` contains the public experiment artifacts selected for release. Local historical and intermediate artifacts remain under `results/archive/` but are excluded from the public source push. No credentials, service addresses, or machine-specific absolute paths belong in the repository.
+
+The released result must be described as a Code as Policies Piper/MuJoCo migration under the registered adapter protocol. It must not be presented as the original paper's hardware success rate.

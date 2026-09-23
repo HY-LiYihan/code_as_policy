@@ -1,0 +1,16 @@
+__pycache__/
+.pytest_cache/
+.venv/
+.env
+.env.*
+*.mp4
+*.png
+MUJOCO_LOG.TXT
+/results/archive/
+/results/canonical/**/*
+!/results/canonical/
+!/results/canonical/*/
+!/results/canonical/*/manifest.json
+!/results/canonical/*/summary.json
+!/results/canonical/*/trials.jsonl
+!/results/canonical/workspace-calibration.json
